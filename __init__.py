@@ -38,14 +38,17 @@ def getpage():
         page = request.args.get('page')
     client = MongoClient(uri)
     db = client['media']
-    booksCollection = db['books']
-    query = {"_id": ObjectId(id)}
-    document = booksCollection.find_one(query)
+    pagesCollection = db['pages']
+    query = {"bookID": id, "pageID": page}
+    document = pagesCollection.find_one(query)
     print(document) #debugging
-    if str(page) in document["pages"]:
-        return document["pages"][str(page)]
+    if document:
+        if "page" in document: 
+            return document['page']
+        else:
+            return {"status_code": 202}, 202
     else:
-        return {"status_code": 202}
+        return {"status_code": 202}, 202
 
 @app.route("/generatepage")
 def generatePage():
@@ -54,18 +57,28 @@ def generatePage():
 
     client = MongoClient(uri)
     db = client['media']
-    booksCollection = db['books']
-    query = {"_id": ObjectId(id)}
-    document = booksCollection.find_one(query)
+    pagesCollection = db['pages']
+    query = {"bookID": id, "pageID": pageID}
+    document = pagesCollection.find_one(query)
+
+    if document:
+        return {"status_code": 409}, 409
+    
+    pagesCollection.insert_one({"bookID": id, "pageID": pageID})
+
+
+    doc = pagesCollection.find_one({"bookID": id, "pageID": "0"})
 
     api_key = "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"
     model = "gpt-3.5-turbo"
-    prompt = "come up with a part of a short story about a day in the life of a Singaporean in continuation of the following passage: " + document["pages"]["0"]["content"] 
+    prompt = "come up with a part of a short story about a day in the life of a Singaporean in continuation of the following passage: " + doc["page"]["content"] 
     currPage = ""
     for char in pageID[:-1]: #exclude last char
         currPage += char
-        prompt += " " + document["pages"][currPage]["content"]
-    prompt += " The main character decided to do this: " +  document["pages"][pageID[:-1]]["options"][int(pageID[-1])-1]["header"]
+        doc = pagesCollection.find_one({"bookID": id, "pageID": currPage})
+        prompt += " " + doc["page"]["content"]
+    doc = pagesCollection.find_one({"bookID": id, "pageID": pageID[:-1]})
+    prompt += " The main character decided to do this: " +  doc["page"]["options"][int(pageID[-1])-1]["header"]
     prompt += "\n\n\n"
     prompt += "Include 4 options of continuing the story\n"
     prompt += "the theme is cultural preservation and historical\n"
@@ -109,13 +122,18 @@ def generatePage():
     print(res)
     url = res['data'][0]['url']
     r = requests.get(url, allow_redirects=True)
-    open(f"books/{id}/{pageID}.png", 'wb').write(r.content)
+    open(f"/var/www/html/splash/books/{id}/{pageID}.png", 'wb').write(r.content)
+
+    #generating audio
+    sess = requests.Session()
+    sess.auth = ("apikey", "B4LjtS82q-z0SuvK2mv0xpw-6fAiXTywjBzkLLtyFmhP")
+    res = sess.get("https://api.jp-tok.text-to-speech.watson.cloud.ibm.com/instances/e9288aee-700b-450f-ae56-9c5432bee50f/v1/synthesize", params={"text": content, "voice" : 'en-GB_KateV3Voice', "rate_percentage" :-20, "pitch_percentage" :-25, "accept": 'audio/mp3'})
+    open(f"/var/www/html/splash/books/{id}/{pageID}.mp3", 'wb').write(res.content)
 
     opt = [{"header": option1,"linkedPage": pageID + "1"}, {"header": option2,"linkedPage": pageID + "2"}, {"header": option3,"linkedPage": pageID + "3"}, {"header": option4,"linkedPage": pageID + "4"}]
-    subdoc = {"content": content, "audio": "URL", "image": f"http://ai.bdp.blue/images?book={id}&img={pageID}.png", "options": opt}
-    document["pages"][pageID] = subdoc
+    subdoc = {"content": content, "audio": f"http://ai.bdp.blue/audio?book={id}&audio={pageID}.mp3", "image": f"http://ai.bdp.blue/images?book={id}&img={pageID}.png", "options": opt}
 
-    booksCollection.update_one(query, {'$set' :document})
+    pagesCollection.update_one(query, {'$set' : {"bookID": id, "pageID": pageID, "page":subdoc}})
 
     return {"status_code": 200}
 
@@ -124,6 +142,12 @@ def getImages():
     book = request.args.get('book')
     img = request.args.get('img')
     path = f"books/{book}/{img}"
+    return send_file(path)
+@app.route("/audio")
+def getAudio():
+    book = request.args.get('book')
+    audio = request.args.get('audio')
+    path = f"books/{book}/{audio}"
     return send_file(path)
 if __name__ == "__main__":
     app.run()
